@@ -1,0 +1,222 @@
+internal final class MCSSSRSReportEmailer
+{
+    [SubscribesTo(classStr(SRSPrintDestinationSettingsDelegates), delegateStr(SRSPrintDestinationSettingsDelegates, toSendEmail))]
+    public static void SRSPrintDestinationSettingsDelegates_toSendEmail(System.Byte[] reportBytes, SrsReportRunPrinter printer, SrsReportDataContract dataContract, Microsoft.Dynamics.AX.Framework.Reporting.Shared.ReportingService.ParameterValue[] paramArray, EventHandlerResult result)
+    {
+        boolean sendEmail = true;
+        SrsReportEMailDataContract  emailContract = datacontract.parmPrintSettings().parmEMailContract();
+        System.Byte[] reportBytesAdditional;
+        str attachmentFileNameAdditional;
+        SRSReportFileFormat additionalFileFormat;
+        boolean             requiredAdditionalAttachment;
+
+        if(dataContract.parmReportName() == 'MCSBankPaymAdviceVendV2.Report')
+        {
+            if (reportBytes && reportBytes.Length > 0)
+            {
+                emailContract.removeInvalidEmails();
+                SRSReportFileFormat fileFormat = emailContract.parmAttachmentFileFormat();
+                SRSImageFileFormat imageFormat = emailContract.parmAttachmentImageFileFormat();
+                str fileName = MCSSSRSReportEmailer::getAttachmentName(fileFormat,ImageFormat,datacontract);
+
+                if(fileFormat == SRSReportFileFormat::PDF)
+                {
+                    additionalFileFormat = SRSReportFileFormat::Excel;
+                    requiredAdditionalAttachment = true; 
+                }
+                else if(fileFormat == SRSReportFileFormat::Excel) 
+                {
+                    additionalFileFormat = SRSReportFileFormat::PDF;
+                    requiredAdditionalAttachment = true; 
+                }
+
+                if(requiredAdditionalAttachment)
+                {
+                    attachmentFileNameAdditional = MCSSSRSReportEmailer::getAttachmentName(additionalFileFormat, imageFormat,datacontract);
+
+                    reportBytesAdditional = MCSSSRSReportEmailer::renderReportToFile(attachmentFileNameAdditional, additionalFileFormat,dataContract,printer,paramArray);
+                }
+
+                MCSSSRSReportEmailer::sendReportWithMultipleAttachment(emailContract,reportBytes,fileName,attachmentFileNameAdditional,reportBytesAdditional);
+                sendEmail = false;
+                info("@MCSReportsEmailing:ReportSavedToQueue");
+            }
+        }
+        else 
+        {
+            sendEmail = true; 
+        }
+        result.result(sendEmail);
+    }
+
+    private static str buildFromEmailAddress()
+    {
+        UserInfo userInfo;
+        SysUserInfo sysUserInfo = SysUserInfo::find(curuserid());
+        // try to get it from SysUserInfo
+        str value = strrtrim(strltrim(sysUserInfo.emailDisplay()));
+
+        if (strlen(value) == 0)
+        {
+            select firstonly Id, NetworkAlias from userInfo where userInfo.Id == curuserid();
+            if (strlen(userInfo.NetworkAlias) > 0)
+            {
+                value = userInfo.networkAlias;
+                if (!strContains(userInfo.networkAlias, '@') && strLen(userInfo.networkDomain) > 0)
+                {
+                    value += '@' + userInfo.networkDomain;
+                }
+            }
+        }
+
+        return value;
+    }
+    server static void sendReportWithMultipleAttachment(SrsReportEMailDataContract emailContract,
+                                System.Byte[] reportBytes, 
+                                str _fileName,
+                                str _additionalfileName,
+                                System.Byte[] reportBytesAdditional)
+    {
+        container embeddedBinaryData;
+        Filename filePath;
+        Filename filename;
+        Filename fileExtension;
+        str      emailAddr = emailContract.parmTo(); 
+        str      subject   = emailContract.parmSubject(); 
+        str      message   = emailContract.parmBody(); 
+        //Filename        _attachmentFilename = '',
+       // System.Byte[]   reportBytes = null,
+        UserId  userId = curUserId();
+       // boolean _isWithRetries = false
+
+
+        SysEmailItemId nextEmailItemId;
+        str fromAddress =  MCSSSRSReportEmailer::buildFromEmailAddress();
+        //UserInfo userInfo;
+        //select firstonly Name, NetworkAlias from userInfo where userInfo.Id == _userId;
+        //str 
+        int i = 1;
+        BinData binData;
+
+        SysOutgoingEmailTable outgoingEmailTable;
+        SysOutgoingEmailData outgoingEmailData;
+
+        ttsbegin;
+
+        nextEmailItemId = EventInbox::nextEventId();
+
+        outgoingEmailTable.EmailItemId = nextEmailItemId;
+        outgoingEmailTable.IsSystemEmail = NoYes::No;
+
+        outgoingEmailTable.Sender = fromAddress;
+        //outgoingEmailTable.SenderName = table.SenderName ? table.SenderName : userInfo.name;
+        outgoingEmailTable.Recipient = emailAddr;
+       // outgoingEmailTable.Origin = table.Description;
+
+        outgoingEmailTable.Subject = subject;
+        //outgoingEmailTable.Priority = table.Priority;
+        outgoingEmailTable.WithRetries = false;
+        outgoingEmailTable.RetryNum = 0;
+        outgoingEmailTable.UserId = userId;
+        outgoingEmailTable.Status = SysEmailStatus::Unsent;
+        outgoingEmailTable.Message = message;
+
+        if (reportBytes && reportBytes.Length > 0)
+        {
+            binData = new BinData();
+            //BP Deviation Documented
+            embeddedBinaryData =  BinData::loadFromBase64(System.Convert::ToBase64String(reportBytes));
+
+            outgoingEmailData.EmailItemId = nextEmailItemId;
+            outgoingEmailData.DataId = i;
+            outgoingEmailData.EmailDataType = SysEmailDataType::Attachment;
+            outgoingEmailData.Data = embeddedBinaryData;
+
+            [filePath, filename, fileExtension] = Global::fileNameSplit(_fileName);
+            outgoingEmailData.FileName = filename;
+            outgoingEmailData.FileExtension = fileExtension;
+
+            outgoingEmailData.insert();
+        }
+
+        if (reportBytesAdditional && reportBytesAdditional.Length > 0)
+        {
+            binData = new BinData();
+            //BP Deviation Documented
+            embeddedBinaryData =  BinData::loadFromBase64(System.Convert::ToBase64String(reportBytesAdditional));
+
+            outgoingEmailData.EmailItemId = nextEmailItemId;
+            outgoingEmailData.DataId = i + 1;
+            outgoingEmailData.EmailDataType = SysEmailDataType::Attachment;
+            outgoingEmailData.Data = embeddedBinaryData;
+
+            [filePath, filename, fileExtension] = Global::fileNameSplit(_additionalfileName);
+            outgoingEmailData.FileName = filename;
+            outgoingEmailData.FileExtension = fileExtension;
+
+            outgoingEmailData.insert();
+        }
+
+        outgoingEmailTable.LatestStatusChangeDateTime = DateTimeUtil::getSystemDateTime();
+        outgoingEmailTable.insert();
+
+        ttscommit;
+    }
+
+    private static str getAttachmentName(SRSReportFileFormat _fileFormat, SRSImageFileFormat _imageFormat, SrsReportDataContract _reportContract )
+    {
+        str value;
+
+        value = _reportContract.parmPrintSettings().parmFileName();
+        if (!value)
+        {
+            value = _reportContract.parmReportCaption();
+
+            if (!value)
+            {
+                value = _reportContract.parmReportName();
+            }
+
+            // Add the file extension
+            value += SRSPrintDestinationSettings::findFileNameType(_fileFormat, _imageFormat);
+        }
+        else
+        {
+            str    actualFileName, fileExtension, actualFilePath;
+
+            [actualFilePath,actualFileName, fileExtension]   =  fileNameSplit(value);
+
+            if(!fileExtension)
+            {
+                // Add the file extension
+                value += SRSPrintDestinationSettings::findFileNameType(_fileFormat, _imageFormat);
+            }
+
+        }
+        return value;
+    }
+
+
+
+     //<summary>
+     //Renders the report to a file.
+     //</summary>
+     //<param name = "_filename">The file name.</param>
+     //<param name = "_fileFormat">The file format.</param>
+     //<returns>A byte array containing the file contents.</returns>
+    private static System.Byte[] renderReportToFile(Filename _filename,
+                                                    SRSReportFileFormat _fileFormat,
+                                                    SrsReportDataContract _reportContract,
+                                                    SrsReportRunPrinter _printer,
+                                                    Microsoft.Dynamics.AX.Framework.Reporting.Shared.ReportingService.ParameterValue[] paramArray)
+    {
+        SRSProxy proxy = _printer.parmSrsProxy();
+        System.Byte[] reportBytes = proxy.renderReportToByteArray(_reportContract.parmReportPath(),
+                                                  paramArray,
+                                                  _fileFormat,
+                                                  _reportContract.parmPrintSettings().deviceInfo());
+
+        return reportBytes;
+    }
+
+}
